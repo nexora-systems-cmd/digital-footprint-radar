@@ -67,6 +67,24 @@ def show_interfaces(interfaces):
 
             print(interface_type, "|", name, "|", status, "|", address)
 
+def get_connected_wifi():
+    try:
+        result = subprocess.run(
+            ["nmcli", "-t", "-f", "IN-USE,SSID", "dev", "wifi"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        for line in result.stdout.splitlines():
+            if line.startswith("*:"):
+                return line.split(":", 1)[1]
+
+        return "Not connected"
+
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "Unavailable"
+
 
 
 hostname = socket.gethostname()
@@ -76,6 +94,7 @@ username = getpass.getuser()
 architecture = platform.machine()
 local_ip = get_local_ip()
 interfaces = get_network_interfaces()
+wifi_ssid = get_connected_wifi()
 
 print("=== Digital Footprint Radar v0.1 ===")
 print("Hostname:", hostname)
@@ -84,5 +103,7 @@ print("Kernel:", kernel)
 print("User:", username)
 print("Architecture:", architecture)
 print("Local IP:", local_ip)
+print("Wi-Fi SSID:", wifi_ssid)
+
 print("\n=== Network Interfaces ===")
 show_interfaces(interfaces)
