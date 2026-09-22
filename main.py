@@ -147,7 +147,17 @@ def get_wifi_details():
 
                 ssid = parts[1]
                 signal = parts[2]
-                frequency = int(parts[3])
+
+                frequency_text = parts[3]
+                frequency_digits = "".join(
+                    char for char in frequency_text if char.isdigit()
+                )
+
+                if not frequency_digits:
+                    return None
+
+                frequency = int(frequency_digits)
+
                 security = parts[4] if parts[4] else "Open"
 
                 if frequency < 3000:
