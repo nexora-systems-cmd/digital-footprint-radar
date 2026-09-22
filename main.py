@@ -132,6 +132,40 @@ def show_wifi_networks(networks):
             "| Security:", network["security"]
         )
 
+def get_wifi_details():
+    try:
+        result = subprocess.run(
+            ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,FREQ,SECURITY", "dev", "wifi"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        for line in result.stdout.splitlines():
+            if line.startswith("*:"):
+                parts = line.split(":", 4)
+
+                ssid = parts[1]
+                signal = parts[2]
+                frequency = int(parts[3])
+                security = parts[4] if parts[4] else "Open"
+
+                if frequency < 3000:
+                    band = "2.4 GHz"
+                elif frequency < 5900:
+                    band = "5 GHz"
+                else:
+                    band = "6 GHz"
+
+                return ssid, signal, frequency, band, security
+
+        return None
+
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+
 hostname = socket.gethostname()
 system = platform.system()
 kernel = platform.release()
@@ -141,6 +175,7 @@ local_ip = get_local_ip()
 interfaces = get_network_interfaces()
 wifi_ssid = get_connected_wifi()
 wifi_networks = get_wifi_networks()
+wifi_details = get_wifi_details()
 
 print("=== Digital Footprint Radar v0.1 ===")
 print("Hostname:", hostname)
@@ -154,3 +189,15 @@ print("Wi-Fi SSID:", wifi_ssid)
 print("\n=== Network Interfaces ===")
 show_interfaces(interfaces)
 show_wifi_networks(wifi_networks)
+print("\n=== Current Wi-Fi ===")
+
+if wifi_details:
+    ssid, signal, frequency, band, security = wifi_details
+
+    print("SSID:", ssid)
+    print("Signal:", signal + "%")
+    print("Frequency:", str(frequency) + " MHz")
+    print("Band:", band)
+    print("Security:", security)
+else:
+    print("Wi-Fi connection not found")
