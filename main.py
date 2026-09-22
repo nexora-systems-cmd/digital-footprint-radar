@@ -85,7 +85,52 @@ def get_connected_wifi():
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "Unavailable"
 
+def get_wifi_networks():
+    try:
+        result = subprocess.run(
+            ["nmcli", "-t", "-f", "SSID,SIGNAL,FREQ,SECURITY", "dev", "wifi", "list"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
 
+        networks = []
+
+        for line in result.stdout.splitlines():
+            parts = line.split(":", 3)
+
+            if len(parts) == 4:
+                ssid = parts[0] if parts[0] else "<Hidden>"
+                signal = parts[1]
+                frequency = parts[2]
+                security = parts[3] if parts[3] else "Open"
+
+                networks.append({
+                    "ssid": ssid,
+                    "signal": signal,
+                    "frequency": frequency,
+                    "security": security
+                })
+
+        return networks
+
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+
+def show_wifi_networks(networks):
+    print("\n=== Nearby Wi-Fi Networks ===")
+
+    if not networks:
+        print("No Wi-Fi networks found")
+        return
+
+    for network in networks:
+        print(
+            network["ssid"],
+            "| Signal:", network["signal"] + "%",
+            "| Freq:", network["frequency"] + " MHz",
+            "| Security:", network["security"]
+        )
 
 hostname = socket.gethostname()
 system = platform.system()
@@ -95,6 +140,7 @@ architecture = platform.machine()
 local_ip = get_local_ip()
 interfaces = get_network_interfaces()
 wifi_ssid = get_connected_wifi()
+wifi_networks = get_wifi_networks()
 
 print("=== Digital Footprint Radar v0.1 ===")
 print("Hostname:", hostname)
@@ -107,3 +153,4 @@ print("Wi-Fi SSID:", wifi_ssid)
 
 print("\n=== Network Interfaces ===")
 show_interfaces(interfaces)
+show_wifi_networks(wifi_networks)
