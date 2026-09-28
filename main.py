@@ -5,6 +5,7 @@ import platform
 import re
 import socket
 import subprocess
+import time
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -20,17 +21,16 @@ DEVICES_FILE = DATA_DIR / "devices.json"
 
 MAX_WORKERS = 64
 
-# Сюди пізніше можна додавати свої пристрої вручну:
-#
-# KNOWN_DEVICES = {
-#     "aa:bb:cc:dd:ee:ff": "My Phone",
-# }
-#
-KNOWN_DEVICES = {}
+# Інтервал Live Radar у секундах
+SCAN_INTERVAL = 5
+
+KNOWN_DEVICES = {
+    # "aa:bb:cc:dd:ee:ff": "My Phone",
+}
 
 
 # =========================================================
-# GENERAL HELPERS
+# HELPERS
 # =========================================================
 
 def run_command(command, timeout=5):
@@ -57,6 +57,12 @@ def now_string():
     )
 
 
+def current_time():
+    return datetime.now().strftime(
+        "%H:%M:%S"
+    )
+
+
 def ensure_data_dir():
     DATA_DIR.mkdir(
         parents=True,
@@ -65,29 +71,10 @@ def ensure_data_dir():
 
 
 # =========================================================
-# SYSTEM INFO
+# SYSTEM
 # =========================================================
 
-def get_system_info():
-
-    hostname = socket.gethostname()
-    system = platform.system()
-    kernel = platform.release()
-    user = getpass.getuser()
-    architecture = platform.machine()
-
-    return {
-        "hostname": hostname,
-        "system": system,
-        "kernel": kernel,
-        "user": user,
-        "architecture": architecture,
-    }
-
-
 def show_system_info():
-
-    info = get_system_info()
 
     print(
         "\n=== DIGITAL FOOTPRINT RADAR ===\n"
@@ -98,78 +85,29 @@ def show_system_info():
     )
 
     print(
-        f"Hostname:     {info['hostname']}"
+        f"Hostname:     {socket.gethostname()}"
     )
 
     print(
-        f"System:       {info['system']}"
+        f"System:       {platform.system()}"
     )
 
     print(
-        f"Kernel:       {info['kernel']}"
+        f"Kernel:       {platform.release()}"
     )
 
     print(
-        f"User:         {info['user']}"
+        f"User:         {getpass.getuser()}"
     )
 
     print(
-        f"Architecture: {info['architecture']}"
+        f"Architecture: {platform.machine()}"
     )
 
 
 # =========================================================
-# NETWORK INTERFACE DETECTION
+# NETWORK INTERFACES
 # =========================================================
-
-def get_active_wifi_interface():
-
-    output = run_command(
-        [
-            "nmcli",
-            "-t",
-            "-f",
-            "DEVICE,TYPE,STATE",
-            "device",
-            "status"
-        ]
-    )
-
-    for line in output.splitlines():
-
-        parts = line.split(":")
-
-        if len(parts) < 3:
-            continue
-
-        device = parts[0]
-        device_type = parts[1]
-        state = parts[2].lower()
-
-        if (
-            device_type == "wifi"
-            and "connected" in state
-        ):
-            return device
-
-    # Fallback
-    output = run_command(
-        [
-            "iw",
-            "dev"
-        ]
-    )
-
-    match = re.search(
-        r"Interface\s+(\S+)",
-        output
-    )
-
-    if match:
-        return match.group(1)
-
-    return None
-
 
 def get_interface_ipv4(interface):
 
@@ -197,76 +135,6 @@ def get_interface_ipv4(interface):
 
     return None
 
-
-def get_interface_ip_and_network(interface):
-
-    address = get_interface_ipv4(
-        interface
-    )
-
-    if not address:
-        return None, None
-
-    try:
-
-        interface_object = (
-            ipaddress.ip_interface(
-                address
-            )
-        )
-
-        return (
-            str(interface_object.ip),
-            interface_object.network
-        )
-
-    except ValueError:
-        return None, None
-
-
-def get_interface_mac(interface):
-
-    path = Path(
-        f"/sys/class/net/{interface}/address"
-    )
-
-    try:
-
-        return (
-            path.read_text()
-            .strip()
-            .lower()
-        )
-
-    except OSError:
-        return "-"
-
-
-def get_default_gateway():
-
-    output = run_command(
-        [
-            "ip",
-            "route",
-            "show",
-            "default"
-        ]
-    )
-
-    match = re.search(
-        r"default via ([0-9.]+)",
-        output
-    )
-
-    if match:
-        return match.group(1)
-
-    return None
-
-
-# =========================================================
-# NETWORK INTERFACES
-# =========================================================
 
 def classify_interface(name):
 
@@ -301,63 +169,7 @@ def classify_interface(name):
     return "Other"
 
 
-def get_network_interfaces():
-
-    base = Path(
-        "/sys/class/net"
-    )
-
-    interfaces = []
-
-    if not base.exists():
-        return interfaces
-
-    for interface_path in sorted(
-        base.iterdir()
-    ):
-
-        name = interface_path.name
-
-        state_path = (
-            interface_path / "operstate"
-        )
-
-        try:
-
-            state = (
-                state_path
-                .read_text()
-                .strip()
-                .upper()
-            )
-
-        except OSError:
-
-            state = "UNKNOWN"
-
-        ipv4 = get_interface_ipv4(
-            name
-        )
-
-        interfaces.append(
-            {
-                "name": name,
-                "type": classify_interface(
-                    name
-                ),
-                "state": state,
-                "ip": ipv4 or "-"
-            }
-        )
-
-    return interfaces
-
-
 def show_network_interfaces():
-
-    interfaces = (
-        get_network_interfaces()
-    )
 
     print(
         "\n=== NETWORK INTERFACES ===\n"
@@ -367,34 +179,160 @@ def show_network_interfaces():
         f"{'TYPE':<12}"
         f"{'INTERFACE':<16}"
         f"{'STATE':<12}"
-        f"{'IPv4'}"
+        f"IPv4"
     )
 
-    print(
-        "-" * 65
+    print("-" * 65)
+
+    base = Path(
+        "/sys/class/net"
     )
 
-    for interface in interfaces:
+    if not base.exists():
+        return
+
+    for path in sorted(
+        base.iterdir()
+    ):
+
+        name = path.name
+
+        try:
+
+            state = (
+                (path / "operstate")
+                .read_text()
+                .strip()
+                .upper()
+            )
+
+        except OSError:
+
+            state = "UNKNOWN"
+
+        ip = (
+            get_interface_ipv4(name)
+            or "-"
+        )
 
         print(
-            f"{interface['type']:<12}"
-            f"{interface['name']:<16}"
-            f"{interface['state']:<12}"
-            f"{interface['ip']}"
+            f"{classify_interface(name):<12}"
+            f"{name:<16}"
+            f"{state:<12}"
+            f"{ip}"
         )
 
 
 # =========================================================
-# WI-FI
+# ACTIVE WI-FI
+# =========================================================
+
+def get_active_wifi_interface():
+
+    output = run_command(
+        [
+            "nmcli",
+            "-t",
+            "-f",
+            "DEVICE,TYPE,STATE",
+            "device",
+            "status"
+        ]
+    )
+
+    for line in output.splitlines():
+
+        parts = line.split(":")
+
+        if len(parts) < 3:
+            continue
+
+        device = parts[0]
+        device_type = parts[1]
+        state = parts[2].lower()
+
+        if (
+            device_type == "wifi"
+            and "connected" in state
+        ):
+            return device
+
+    return None
+
+
+def get_interface_ip_network(interface):
+
+    address = get_interface_ipv4(
+        interface
+    )
+
+    if not address:
+        return None, None
+
+    try:
+
+        obj = ipaddress.ip_interface(
+            address
+        )
+
+        return (
+            str(obj.ip),
+            obj.network
+        )
+
+    except ValueError:
+        return None, None
+
+
+def get_interface_mac(interface):
+
+    path = Path(
+        f"/sys/class/net/{interface}/address"
+    )
+
+    try:
+
+        return (
+            path
+            .read_text()
+            .strip()
+            .lower()
+        )
+
+    except OSError:
+
+        return "-"
+
+
+def get_default_gateway():
+
+    output = run_command(
+        [
+            "ip",
+            "route",
+            "show",
+            "default"
+        ]
+    )
+
+    match = re.search(
+        r"default via ([0-9.]+)",
+        output
+    )
+
+    if match:
+        return match.group(1)
+
+    return None
+
+
+# =========================================================
+# WI-FI SCANNER
 # =========================================================
 
 def split_nmcli_line(line):
-    """
-    nmcli -t екранує ':' як '\\:'.
-    Ця функція правильно розбиває поля.
-    """
 
-    result = []
+    fields = []
     current = []
     escaped = False
 
@@ -411,7 +349,7 @@ def split_nmcli_line(line):
 
         elif char == ":":
 
-            result.append(
+            fields.append(
                 "".join(current)
             )
 
@@ -421,11 +359,11 @@ def split_nmcli_line(line):
 
             current.append(char)
 
-    result.append(
+    fields.append(
         "".join(current)
     )
 
-    return result
+    return fields
 
 
 def clean_frequency(value):
@@ -443,18 +381,18 @@ def clean_frequency(value):
     )
 
 
-def get_band(frequency):
+def get_band(freq):
 
-    if frequency is None:
+    if freq is None:
         return "-"
 
-    if 2400 <= frequency <= 2500:
+    if 2400 <= freq <= 2500:
         return "2.4 GHz"
 
-    if 4900 <= frequency <= 5900:
+    if 4900 <= freq <= 5900:
         return "5 GHz"
 
-    if 5925 <= frequency <= 7125:
+    if 5925 <= freq <= 7125:
         return "6 GHz"
 
     return "Unknown"
@@ -490,11 +428,9 @@ def scan_wifi_networks(interface):
         if len(fields) < 5:
             continue
 
-        in_use = fields[0]
-        ssid = fields[1] or "<hidden>"
-
         try:
             signal = int(fields[2])
+
         except ValueError:
             signal = 0
 
@@ -502,41 +438,33 @@ def scan_wifi_networks(interface):
             fields[3]
         )
 
-        security = (
-            fields[4]
-            if fields[4]
-            else "Open"
-        )
-
         networks.append(
             {
-                "current": in_use == "*",
-                "ssid": ssid,
+                "current": fields[0] == "*",
+                "ssid": (
+                    fields[1]
+                    or "<hidden>"
+                ),
                 "signal": signal,
                 "frequency": frequency,
                 "band": get_band(
                     frequency
                 ),
-                "security": security,
+                "security": (
+                    fields[4]
+                    or "Open"
+                )
             }
         )
 
     return networks
 
 
-def show_wifi_networks(networks):
+def show_wifi(networks):
 
     print(
         "\n=== NEARBY WI-FI NETWORKS ===\n"
     )
-
-    if not networks:
-
-        print(
-            "No Wi-Fi networks found."
-        )
-
-        return
 
     for network in networks:
 
@@ -560,14 +488,11 @@ def show_wifi_networks(networks):
             f"Security: {network['security']}"
         )
 
-
-def show_current_wifi(networks):
-
     current = next(
         (
-            network
-            for network in networks
-            if network["current"]
+            net
+            for net in networks
+            if net["current"]
         ),
         None
     )
@@ -576,37 +501,38 @@ def show_current_wifi(networks):
         "\n=== CURRENT WI-FI ==="
     )
 
-    if not current:
+    if current:
+
+        print(
+            f"SSID:      {current['ssid']}"
+        )
+
+        print(
+            f"Signal:    {current['signal']}%"
+        )
+
+        print(
+            f"Frequency: "
+            f"{current['frequency']} MHz"
+        )
+
+        print(
+            f"Band:      {current['band']}"
+        )
+
+        print(
+            f"Security:  {current['security']}"
+        )
+
+    else:
 
         print(
             "Wi-Fi connection not found"
         )
 
-        return
-
-    print(
-        f"SSID:      {current['ssid']}"
-    )
-
-    print(
-        f"Signal:    {current['signal']}%"
-    )
-
-    print(
-        f"Frequency: {current['frequency']} MHz"
-    )
-
-    print(
-        f"Band:      {current['band']}"
-    )
-
-    print(
-        f"Security:  {current['security']}"
-    )
-
 
 # =========================================================
-# DEVICE DATABASE
+# DATABASE
 # =========================================================
 
 def load_devices():
@@ -678,11 +604,10 @@ def ping_host(ip):
             timeout=2
         )
 
-        return (
-            result.returncode == 0
-        )
+        return result.returncode == 0
 
     except subprocess.SubprocessError:
+
         return False
 
 
@@ -713,7 +638,7 @@ def get_neighbour_mac(ip):
     return "-"
 
 
-def neighbour_is_alive(ip):
+def neighbour_alive(ip):
 
     output = run_command(
         [
@@ -738,19 +663,9 @@ def neighbour_is_alive(ip):
 
 def probe_host(ip):
 
-    ping_success = ping_host(
-        ip
-    )
-
-    neighbour_success = (
-        neighbour_is_alive(
-            ip
-        )
-    )
-
     return (
-        ping_success
-        or neighbour_success
+        ping_host(ip)
+        or neighbour_alive(ip)
     )
 
 
@@ -763,24 +678,21 @@ def find_online_hosts(
         network.hosts()
     )
 
-    # Не даємо випадково запустити
-    # величезний скан.
     if len(hosts) > 1024:
 
         print(
-            "[!] Network is too large "
-            "for the current scanner."
+            "[!] Network too large."
         )
 
         return []
 
-    online_hosts = []
+    online = []
 
     workers = min(
         MAX_WORKERS,
         max(
-            1,
-            len(hosts)
+            len(hosts),
+            1
         )
     )
 
@@ -792,13 +704,9 @@ def find_online_hosts(
 
         for ip in hosts:
 
-            # Свій комп'ютер не треба ping-ати
             if str(ip) == local_ip:
 
-                online_hosts.append(
-                    ip
-                )
-
+                online.append(ip)
                 continue
 
             future = executor.submit(
@@ -817,16 +725,13 @@ def find_online_hosts(
             try:
 
                 if future.result():
-
-                    online_hosts.append(
-                        ip
-                    )
+                    online.append(ip)
 
             except Exception:
                 pass
 
     return sorted(
-        online_hosts,
+        online,
         key=int
     )
 
@@ -846,17 +751,14 @@ def get_hostname(ip):
             timeout=1
         )
 
-        output = (
+        parts = (
             result.stdout
             .strip()
+            .split()
         )
 
-        if output:
-
-            parts = output.split()
-
-            if len(parts) >= 2:
-                return parts[1]
+        if len(parts) >= 2:
+            return parts[1]
 
     except subprocess.SubprocessError:
         pass
@@ -865,7 +767,7 @@ def get_hostname(ip):
 
 
 # =========================================================
-# MAC VENDOR DATABASE
+# VENDOR
 # =========================================================
 
 OUI_DATABASE = None
@@ -890,15 +792,9 @@ def load_oui_database():
     database = {}
 
     files = [
-        Path(
-            "/usr/share/wireshark/manuf"
-        ),
-        Path(
-            "/usr/share/hwdata/oui.txt"
-        ),
-        Path(
-            "/usr/share/ieee-data/oui.txt"
-        ),
+        Path("/usr/share/wireshark/manuf"),
+        Path("/usr/share/hwdata/oui.txt"),
+        Path("/usr/share/ieee-data/oui.txt"),
     ]
 
     for path in files:
@@ -925,22 +821,14 @@ def load_oui_database():
                     ):
                         continue
 
-                    # Wireshark manuf format
                     if "\t" in line:
 
-                        parts = (
-                            line.split()
-                        )
+                        parts = line.split()
 
                         if len(parts) >= 2:
 
-                            prefix = (
-                                parts[0]
-                                .split("/")[0]
-                            )
-
                             oui = normalize_oui(
-                                prefix
+                                parts[0]
                             )
 
                             if len(oui) == 6:
@@ -952,8 +840,7 @@ def load_oui_database():
                                     )[:60]
                                 )
 
-                    # IEEE / hwdata format
-                    if "(hex)" in line:
+                    elif "(hex)" in line:
 
                         before, after = (
                             line.split(
@@ -994,17 +881,12 @@ def get_vendor(mac):
     ):
         return "-"
 
-    oui = normalize_oui(
-        mac
-    )
-
-    database = (
+    return (
         load_oui_database()
-    )
-
-    return database.get(
-        oui,
-        "Unknown"
+        .get(
+            normalize_oui(mac),
+            "Unknown"
+        )
     )
 
 
@@ -1012,7 +894,12 @@ def get_vendor(mac):
 # DEVICE IDENTITY
 # =========================================================
 
-def get_device_id(ip, mac):
+def get_device_id(device):
+
+    mac = device.get(
+        "mac",
+        "-"
+    )
 
     if (
         mac
@@ -1020,34 +907,40 @@ def get_device_id(ip, mac):
     ):
         return mac.lower()
 
-    return f"ip:{ip}"
+    return (
+        "ip:"
+        + device["ip"]
+    )
 
 
-def identify_known_device(
+def identify_device(
     device,
     local_ip,
     gateway_ip
 ):
 
-    mac = device["mac"]
-
-    # Наш ноутбук
     if device["ip"] == local_ip:
 
-        return True, "My Laptop"
+        return (
+            True,
+            "My Laptop"
+        )
 
-    # Поточний gateway/router
     if (
         gateway_ip
-        and device["ip"] == gateway_ip
+        and device["ip"]
+        == gateway_ip
     ):
 
-        return True, "Gateway"
+        return (
+            True,
+            "Gateway"
+        )
 
-    # Ручний список
+    mac = device["mac"]
+
     if (
-        mac
-        and mac != "-"
+        mac != "-"
         and mac.lower()
         in KNOWN_DEVICES
     ):
@@ -1059,195 +952,57 @@ def identify_known_device(
             ]
         )
 
-    return False, "-"
+    return (
+        False,
+        "-"
+    )
 
 
 # =========================================================
-# HISTORY MIGRATION / CLEANUP
-# =========================================================
-
-def merge_first_seen(
-    first,
-    second
-):
-
-    values = [
-        value
-        for value in (
-            first,
-            second
-        )
-        if value
-    ]
-
-    if not values:
-        return now_string()
-
-    return min(values)
-
-
-def cleanup_duplicate_history(
-    history
-):
-
-    mac_records_by_ip = {}
-
-    for device_id, device in history.items():
-
-        if device_id.startswith(
-            "ip:"
-        ):
-            continue
-
-        ip = device.get("ip")
-
-        if ip:
-            mac_records_by_ip[ip] = (
-                device_id
-            )
-
-    remove_ids = []
-
-    for device_id, device in history.items():
-
-        if not device_id.startswith(
-            "ip:"
-        ):
-            continue
-
-        ip = device.get("ip")
-
-        if (
-            ip
-            and ip in mac_records_by_ip
-        ):
-
-            mac_id = (
-                mac_records_by_ip[ip]
-            )
-
-            mac_record = (
-                history[mac_id]
-            )
-
-            mac_record["first_seen"] = (
-                merge_first_seen(
-                    mac_record.get(
-                        "first_seen"
-                    ),
-                    device.get(
-                        "first_seen"
-                    )
-                )
-            )
-
-            remove_ids.append(
-                device_id
-            )
-
-    for device_id in remove_ids:
-
-        history.pop(
-            device_id,
-            None
-        )
-
-    return history
-
-
-# =========================================================
-# HISTORY UPDATE
+# HISTORY
 # =========================================================
 
 def update_history(
-    current_devices,
+    devices,
     local_ip,
     gateway_ip
 ):
 
     history = load_devices()
 
-    history = (
-        cleanup_duplicate_history(
-            history
-        )
-    )
+    timestamp = now_string()
 
     current_ids = set()
 
-    timestamp = now_string()
+    for device in devices:
 
-    for device in current_devices:
-
-        ip = device["ip"]
-        mac = device["mac"]
-
-        device_id = get_device_id(
-            ip,
-            mac
-        )
-
-        legacy_id = f"ip:{ip}"
-
-        migrated = False
-
-        # Старий запис без MAC -> новий MAC ID
-        if (
-            mac != "-"
-            and legacy_id in history
-            and legacy_id != device_id
-        ):
-
-            legacy_record = (
-                history.pop(
-                    legacy_id
-                )
+        device_id = (
+            get_device_id(
+                device
             )
-
-            if device_id in history:
-
-                history[device_id][
-                    "first_seen"
-                ] = merge_first_seen(
-                    history[
-                        device_id
-                    ].get(
-                        "first_seen"
-                    ),
-                    legacy_record.get(
-                        "first_seen"
-                    )
-                )
-
-            else:
-
-                history[device_id] = (
-                    legacy_record
-                )
-
-            migrated = True
+        )
 
         current_ids.add(
             device_id
         )
 
         known, name = (
-            identify_known_device(
+            identify_device(
                 device,
                 local_ip,
                 gateway_ip
             )
         )
 
-        existed_before = (
+        existing = (
             device_id in history
         )
 
-        if not existed_before:
+        if not existing:
 
             history[device_id] = {
-                "ip": ip,
-                "mac": mac,
+                "ip": device["ip"],
+                "mac": device["mac"],
                 "hostname": (
                     device["hostname"]
                 ),
@@ -1255,22 +1010,27 @@ def update_history(
                     device["vendor"]
                 ),
                 "name": name,
+                "known": known,
                 "first_seen": timestamp,
                 "last_seen": timestamp,
-                "status": "ONLINE",
-                "known": known,
+                "status": "ONLINE"
             }
 
-            new_device = True
+            device["new"] = True
 
         else:
 
-            saved = (
-                history[device_id]
+            saved = history[
+                device_id
+            ]
+
+            saved["ip"] = (
+                device["ip"]
             )
 
-            saved["ip"] = ip
-            saved["mac"] = mac
+            saved["mac"] = (
+                device["mac"]
+            )
 
             saved["hostname"] = (
                 device["hostname"]
@@ -1293,32 +1053,11 @@ def update_history(
                 saved["known"] = True
                 saved["name"] = name
 
-            else:
-
-                saved.setdefault(
-                    "known",
-                    False
-                )
-
-                saved.setdefault(
-                    "name",
-                    "-"
-                )
-
-            new_device = False
-
-        # Міграція старого запису не є
-        # появою нового пристрою.
-        if migrated:
-            new_device = False
+            device["new"] = False
 
         saved = history[
             device_id
         ]
-
-        device["new"] = (
-            new_device
-        )
 
         device["known"] = (
             saved.get(
@@ -1348,11 +1087,9 @@ def update_history(
             )
         )
 
-    # Все, чого зараз немає, OFFLINE
-    for (
-        device_id,
-        saved
-    ) in history.items():
+    for device_id, saved in (
+        history.items()
+    ):
 
         if (
             device_id
@@ -1363,36 +1100,151 @@ def update_history(
                 "OFFLINE"
             )
 
-    history = (
-        cleanup_duplicate_history(
-            history
-        )
-    )
-
     save_devices(
         history
     )
 
+    return history
+
+
+# =========================================================
+# LAN SNAPSHOT
+# =========================================================
+
+def scan_lan_snapshot(
+    interface,
+    quiet=False
+):
+
+    local_ip, network = (
+        get_interface_ip_network(
+            interface
+        )
+    )
+
+    if (
+        not local_ip
+        or network is None
+    ):
+
+        return (
+            [],
+            {},
+            None,
+            None,
+            None
+        )
+
+    local_mac = (
+        get_interface_mac(
+            interface
+        )
+    )
+
+    gateway_ip = (
+        get_default_gateway()
+    )
+
+    if not quiet:
+
+        print(
+            "\n=== LAN SCANNER ==="
+        )
+
+        print(
+            f"Interface: {interface}"
+        )
+
+        print(
+            f"Local IP:  {local_ip}"
+        )
+
+        print(
+            f"Local MAC: {local_mac}"
+        )
+
+        print(
+            f"Gateway:   "
+            f"{gateway_ip or '-'}"
+        )
+
+        print(
+            f"Network:   {network}"
+        )
+
+        print(
+            "\nScanning..."
+        )
+
+    online_hosts = (
+        find_online_hosts(
+            network,
+            local_ip
+        )
+    )
+
+    devices = []
+
+    for ip in online_hosts:
+
+        ip_text = str(ip)
+
+        if ip_text == local_ip:
+
+            mac = local_mac
+
+            hostname = (
+                socket.gethostname()
+            )
+
+        else:
+
+            mac = (
+                get_neighbour_mac(
+                    ip
+                )
+            )
+
+            hostname = (
+                get_hostname(ip)
+            )
+
+        devices.append(
+            {
+                "ip": ip_text,
+                "mac": mac,
+                "hostname": hostname,
+                "vendor": (
+                    get_vendor(mac)
+                )
+            }
+        )
+
+    history = update_history(
+        devices,
+        local_ip,
+        gateway_ip
+    )
+
     return (
-        current_devices,
-        history
+        devices,
+        history,
+        local_ip,
+        gateway_ip,
+        network
     )
 
 
 # =========================================================
-# DISPLAY
+# OUTPUT
 # =========================================================
 
-def get_device_type(device):
+def device_type(device):
 
-    if device.get(
-        "known"
-    ):
+    if device.get("known"):
         return "KNOWN"
 
-    if device.get(
-        "new"
-    ):
+    if device.get("new"):
         return "NEW"
 
     return "UNKNOWN"
@@ -1404,21 +1256,13 @@ def show_devices(devices):
         "\n=== ONLINE DEVICES ===\n"
     )
 
-    if not devices:
-
-        print(
-            "No devices found."
-        )
-
-        return
-
     print(
         f"{'IP':<16}"
         f"{'MAC':<20}"
         f"{'HOSTNAME':<18}"
         f"{'NAME':<16}"
         f"{'TYPE':<10}"
-        f"{'STATUS'}"
+        f"STATUS"
     )
 
     print(
@@ -1431,61 +1275,15 @@ def show_devices(devices):
             f"{device['ip']:<16}"
             f"{device['mac']:<20}"
             f"{device['hostname']:<18}"
-            f"{device['name']:<16}"
-            f"{get_device_type(device):<10}"
+            f"{device.get('name', '-'):<16}"
+            f"{device_type(device):<10}"
             f"ONLINE"
         )
 
-
-def show_new_device_alerts(
-    devices
-):
-
-    unknown_new_devices = [
-        device
-        for device in devices
-        if (
-            device.get("new")
-            and not device.get(
-                "known"
-            )
-        )
-    ]
-
-    if not unknown_new_devices:
-        return
-
     print(
-        "\n=== NEW DEVICE ALERTS ==="
+        f"\nOnline devices: "
+        f"{len(devices)}"
     )
-
-    for device in (
-        unknown_new_devices
-    ):
-
-        print(
-            "\n[NEW UNKNOWN DEVICE]"
-        )
-
-        print(
-            f"IP:         {device['ip']}"
-        )
-
-        print(
-            f"MAC:        {device['mac']}"
-        )
-
-        print(
-            f"Hostname:   {device['hostname']}"
-        )
-
-        print(
-            f"Vendor:     {device['vendor']}"
-        )
-
-        print(
-            f"First seen: {device['first_seen']}"
-        )
 
 
 def show_history(history):
@@ -1500,40 +1298,16 @@ def show_history(history):
         f"{'HOSTNAME':<18}"
         f"{'TYPE':<10}"
         f"{'STATUS':<10}"
-        f"{'LAST SEEN'}"
+        f"LAST SEEN"
     )
 
     print(
         "-" * 105
     )
 
-    def sort_key(item):
+    for device in history.values():
 
-        device = item[1]
-
-        try:
-
-            return int(
-                ipaddress.ip_address(
-                    device.get(
-                        "ip",
-                        "255.255.255.255"
-                    )
-                )
-            )
-
-        except ValueError:
-            return 999999999999
-
-    for (
-        _,
-        device
-    ) in sorted(
-        history.items(),
-        key=sort_key
-    ):
-
-        device_type = (
+        dtype = (
             "KNOWN"
             if device.get(
                 "known"
@@ -1545,155 +1319,198 @@ def show_history(history):
             f"{device.get('ip', '-'):<16}"
             f"{device.get('name', '-'):<16}"
             f"{device.get('hostname', '-'):<18}"
-            f"{device_type:<10}"
+            f"{dtype:<10}"
             f"{device.get('status', '-'):<10}"
             f"{device.get('last_seen', '-')}"
         )
 
 
 # =========================================================
-# LAN SCANNER
+# LIVE RADAR EVENTS
 # =========================================================
 
-def scan_lan(interface):
+def devices_to_map(devices):
 
-    local_ip, network = (
-        get_interface_ip_and_network(
-            interface
-        )
-    )
+    return {
+        get_device_id(device): device
+        for device in devices
+    }
 
-    local_mac = (
-        get_interface_mac(
-            interface
-        )
-    )
 
-    gateway_ip = (
-        get_default_gateway()
+def show_join_event(device):
+
+    print(
+        "\n"
+        "========================================"
     )
 
     print(
-        "\n=== LAN SCANNER ==="
+        f"[+] DEVICE JOINED  {current_time()}"
+    )
+
+    print(
+        "========================================"
+    )
+
+    print(
+        f"IP:       {device['ip']}"
+    )
+
+    print(
+        f"MAC:      {device['mac']}"
+    )
+
+    print(
+        f"Hostname: {device['hostname']}"
+    )
+
+    print(
+        f"Vendor:   {device['vendor']}"
+    )
+
+    print(
+        f"Name:     "
+        f"{device.get('name', '-')}"
+    )
+
+    print(
+        f"Type:     "
+        f"{device_type(device)}"
     )
 
     if (
-        not local_ip
-        or network is None
+        device.get("new")
+        and not device.get("known")
     ):
 
         print(
-            "[!] Active IPv4 network "
-            "not found."
+            "\n[!] NEW UNKNOWN DEVICE"
         )
 
-        return []
+
+def show_leave_event(device):
 
     print(
-        f"Interface: {interface}"
+        "\n"
+        "========================================"
     )
 
     print(
-        f"Local IP:  {local_ip}"
+        f"[-] DEVICE LEFT  {current_time()}"
     )
 
     print(
-        f"Local MAC: {local_mac}"
+        "========================================"
     )
 
     print(
-        f"Gateway:   {gateway_ip or '-'}"
+        f"IP:       {device['ip']}"
     )
 
     print(
-        f"Network:   {network}"
+        f"MAC:      {device['mac']}"
     )
 
     print(
-        "\nScanning..."
+        f"Hostname: {device['hostname']}"
     )
 
-    online_hosts = (
-        find_online_hosts(
-            network,
-            local_ip
+    print(
+        f"Name:     "
+        f"{device.get('name', '-')}"
+    )
+
+
+# =========================================================
+# LIVE RADAR
+# =========================================================
+
+def live_radar(
+    interface,
+    initial_devices
+):
+
+    previous = (
+        devices_to_map(
+            initial_devices
         )
     )
 
-    devices = []
+    print(
+        "\n=== LIVE RADAR ==="
+    )
 
-    for ip in online_hosts:
+    print(
+        f"Scan interval: "
+        f"{SCAN_INTERVAL} seconds"
+    )
 
-        ip_string = str(ip)
+    print(
+        "Watching for devices..."
+    )
 
-        if ip_string == local_ip:
+    print(
+        "Press Ctrl+C to stop.\n"
+    )
 
-            mac = local_mac
+    try:
 
-        else:
+        while True:
 
-            mac = (
-                get_neighbour_mac(
-                    ip
+            time.sleep(
+                SCAN_INTERVAL
+            )
+
+            (
+                current_devices,
+                _,
+                _,
+                _,
+                _
+            ) = scan_lan_snapshot(
+                interface,
+                quiet=True
+            )
+
+            current = (
+                devices_to_map(
+                    current_devices
                 )
             )
 
-        hostname = get_hostname(
-            ip
-        )
-
-        # Для нашого ПК гарантуємо
-        # нормальне ім'я.
-        if ip_string == local_ip:
-
-            hostname = (
-                socket.gethostname()
+            joined = (
+                current.keys()
+                - previous.keys()
             )
 
-        vendor = get_vendor(
-            mac
+            left = (
+                previous.keys()
+                - current.keys()
+            )
+
+            for device_id in joined:
+
+                show_join_event(
+                    current[
+                        device_id
+                    ]
+                )
+
+            for device_id in left:
+
+                show_leave_event(
+                    previous[
+                        device_id
+                    ]
+                )
+
+            previous = current
+
+    except KeyboardInterrupt:
+
+        print(
+            "\n\n=== LIVE RADAR STOPPED ==="
         )
-
-        devices.append(
-            {
-                "ip": ip_string,
-                "mac": mac,
-                "hostname": hostname,
-                "vendor": vendor,
-            }
-        )
-
-    devices, history = (
-        update_history(
-            devices,
-            local_ip,
-            gateway_ip
-        )
-    )
-
-    show_devices(
-        devices
-    )
-
-    print(
-        f"\nOnline devices: "
-        f"{len(devices)}"
-    )
-
-    show_new_device_alerts(
-        devices
-    )
-
-    show_history(
-        history
-    )
-
-    print(
-        f"\nDatabase: "
-        f"{DEVICES_FILE}"
-    )
-
-    return devices
 
 
 # =========================================================
@@ -1706,11 +1523,11 @@ def main():
 
     show_network_interfaces()
 
-    wifi_interface = (
+    interface = (
         get_active_wifi_interface()
     )
 
-    if not wifi_interface:
+    if not interface:
 
         print(
             "\n[!] Active Wi-Fi "
@@ -1720,14 +1537,14 @@ def main():
         return
 
     local_ip, _ = (
-        get_interface_ip_and_network(
-            wifi_interface
+        get_interface_ip_network(
+            interface
         )
     )
 
     print(
         f"\nActive Wi-Fi interface: "
-        f"{wifi_interface}"
+        f"{interface}"
     )
 
     print(
@@ -1735,22 +1552,42 @@ def main():
         f"{local_ip or '-'}"
     )
 
-    wifi_networks = (
+    networks = (
         scan_wifi_networks(
-            wifi_interface
+            interface
         )
     )
 
-    show_wifi_networks(
-        wifi_networks
+    show_wifi(
+        networks
     )
 
-    show_current_wifi(
-        wifi_networks
+    (
+        devices,
+        history,
+        _,
+        _,
+        _
+    ) = scan_lan_snapshot(
+        interface
     )
 
-    scan_lan(
-        wifi_interface
+    show_devices(
+        devices
+    )
+
+    show_history(
+        history
+    )
+
+    print(
+        f"\nDatabase: "
+        f"{DEVICES_FILE}"
+    )
+
+    live_radar(
+        interface,
+        devices
     )
 
 
